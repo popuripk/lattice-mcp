@@ -1,56 +1,79 @@
 import { z } from "zod";
-import { defineTool, PolicyGateway, catalog } from "../src/index.js";
+import { defineTool, PolicyGateway } from "../src/index.js";
 
-const getBalance = defineTool({
-  name: "get_balance",
-  description: "Read an account balance. No side effects.",
+const searchDirectory = defineTool({
+  name: "search_directory",
+  description: "Search a synthetic employee directory. Read only.",
   kind: "read",
-  input: z.object({ account_id: z.string() }),
-  output: z.object({ account_id: z.string(), balance_cents: z.number() }),
-  handler: async ({ account_id }) => ({ account_id, balance_cents: 41_200 }),
+  input: z.object({ q: z.string() }),
+  output: z.object({ hits: z.array(z.string()) }),
+  handler: async ({ q }) => ({ hits: [`A. Rao matches "${q}"`] }),
 });
 
-const transfer = defineTool({
-  name: "transfer_funds",
-  description: "Move funds between accounts. Mutates the ledger.",
+const createTicket = defineTool({
+  name: "create_ticket",
+  description: "Open an ITSM ticket. This is a write.",
   kind: "write",
   risk: "high",
-  input: z.object({
-    from: z.string(),
-    to: z.string(),
-    amount_cents: z.number().positive(),
-  }),
-  output: z.object({ ok: z.boolean(), transfer_id: z.string() }),
-  sideEffects: (a) => [`Debit ${a.from}`, `Credit ${a.to}`, `Amount ${a.amount_cents} cents`],
-  summary: (a) => `Transfer ${a.amount_cents} cents ${a.from} → ${a.to}`,
-  handler: async () => ({ ok: true, transfer_id: "tr_demo_1" }),
+  input: z.object({ title: z.string(), body: z.string() }),
+  output: z.object({ ok: z.boolean(), ticket_id: z.string() }),
+  sideEffects: (a) => [`Create ticket: ${a.title}`],
+  summary: (a) => `Create ticket "${a.title}"`,
+  handler: async () => ({ ok: true, ticket_id: "T-1" }),
 });
+
+const changeCompensation = defineTool({
+  name: "change_compensation",
+  description: "Change pay. Denied in code, not in the prompt.",
+  kind: "write",
+  risk: "high",
+  input: z.object({ employee_id: z.string(), amount: z.number() }),
+  handler: async () => {
+    throw new Error("Handler must never run for this tool.");
+  },
+});
+
+function line(label: string, status: string, extra = "") {
+  console.log(`${label.padEnd(28)} ${status}${extra ? "  " + extra : ""}`);
+}
 
 async function main() {
   const gateway = new PolicyGateway({
     mode: (process.env.LATTICE_MODE as "shadow" | "live" | "autonomous") ?? "shadow",
-    principal: { id: "teller.1", displayName: "A. Rao", roles: ["teller"] },
-    rules: [{ tool: "transfer_funds", effect: "deny", unlessRoles: ["teller", "manager"], reason: "Tellers/managers only" }],
+    principal: { id: "analyst.1", displayName: "A. Rao", roles: ["analyst"] },
+    rules: [
+      { tool: "change_compensation", effect: "deny", reason: "Never from an agent" },
+      { tool: "create_ticket", effect: "require_approval" },
+    ],
   });
 
-  console.log("Tool contracts\n", JSON.stringify(catalog([getBalance, transfer]), null, 2));
+  const read = await gateway.invoke(searchDirectory, { q: "Rao" });
+  line("READ", read.status, JSON.stringify(read.data));
 
-  const read = await gateway.invoke(getBalance, { account_id: "A-100" });
-  console.log("\nREAD", read.status, read.data);
+  const shadow = await gateway.invoke(
+    createTicket,
+    { title: "Laptop", body: "Need a charger" },
+    { approve: true },
+  );
+  line("SHADOW + approve=true", shadow.status, "handler did not run");
 
-  const preview = await gateway.invoke(transfer, { from: "A-100", to: "A-200", amount_cents: 500 });
-  console.log("\nWRITE without approval", preview.status, preview.planned?.summary);
+  const denied = await gateway.invoke(changeCompensation, { employee_id: "E-9", amount: 1 });
+  line("DENY-IN-CODE", denied.status, denied.reason);
 
   gateway.mode = "live";
-  const needs = await gateway.invoke(transfer, { from: "A-100", to: "A-200", amount_cents: 500 });
-  console.log("\nLIVE preview", needs.status);
+  const preview = await gateway.invoke(createTicket, { title: "Laptop", body: "Need a charger" });
+  line("LIVE without approval", preview.status);
 
-  const done = await gateway.invoke(transfer, { from: "A-100", to: "A-200", amount_cents: 500 }, { approve: true });
-  console.log("\nLIVE approved", done.status, done.data);
+  const done = await gateway.invoke(
+    createTicket,
+    { title: "Laptop", body: "Need a charger" },
+    { approve: true },
+  );
+  line("LIVE + approve=true", done.status, JSON.stringify(done.data));
 
-  console.log("\nAudit trail");
-  for (const e of gateway.memory.last()) {
-    console.log(`  ${e.ts}  ${e.decision.padEnd(16)}  ${e.tool}  ${e.reason ?? ""}`);
+  console.log("\nAudit (oldest first)");
+  for (const e of gateway.memory.events) {
+    console.log(`  ${e.decision.padEnd(16)}  ${e.tool}  ${e.reason ?? ""}`);
   }
 }
 
