@@ -16,8 +16,6 @@ LLMs are great at *choosing* tools. They are terrible at being the security boun
                     └──────────────────┘
 ```
 
-Part of the **Lattice** stack: [forge-agent](https://github.com/popuripk/forge-agent) · [atlas-orchestrator](https://github.com/popuripk/atlas-orchestrator) · [lattice-eval](https://github.com/popuripk/lattice-eval) · [lattice-memory](https://github.com/popuripk/lattice-memory)
-
 ## Why this exists
 
 Production agents fail in predictable ways:
@@ -44,29 +42,34 @@ Node 20+.
 import { z } from "zod";
 import { defineTool, PolicyGateway } from "lattice-mcp";
 
-const transfer = defineTool({
-  name: "transfer_funds",
-  description: "Move funds between accounts",
+const createTicket = defineTool({
+  name: "create_ticket",
+  description: "Open an ITSM ticket. This is a write.",
   kind: "write",
   risk: "high",
-  input: z.object({ from: z.string(), to: z.string(), amount_cents: z.number().positive() }),
-  sideEffects: (a) => [`Debit ${a.from}`, `Credit ${a.to}`],
-  handler: async (args) => ({ ok: true, transfer_id: "tr_1" }),
+  input: z.object({ title: z.string(), body: z.string() }),
+  sideEffects: (a) => [`Create ticket: ${a.title}`],
+  handler: async (args) => ({ ok: true, ticket_id: "T-1", title: args.title }),
 });
 
 const gateway = new PolicyGateway({
   mode: "shadow", // shadow | live | autonomous
-  principal: { id: "teller.1", displayName: "A. Rao", roles: ["teller"] },
+  principal: { id: "analyst.1", displayName: "A. Rao", roles: ["analyst"] },
   rules: [
-    { tool: "transfer_funds", effect: "deny", unlessRoles: ["teller", "manager"] },
+    { tool: "create_ticket", effect: "require_approval" },
+    { tool: "change_compensation", effect: "deny", reason: "Never from an agent" },
   ],
 });
 
-const preview = await gateway.invoke(transfer, { from: "A-1", to: "A-2", amount_cents: 500 });
+const preview = await gateway.invoke(createTicket, { title: "Laptop", body: "Need a charger" });
 // { status: "shadow_blocked", planned: { summary, sideEffects, ... } }
 
 gateway.mode = "live";
-const done = await gateway.invoke(transfer, { from: "A-1", to: "A-2", amount_cents: 500 }, { approve: true });
+const done = await gateway.invoke(
+  createTicket,
+  { title: "Laptop", body: "Need a charger" },
+  { approve: true },
+);
 // { status: "done", data: { ok: true, ... } }
 ```
 
@@ -90,8 +93,8 @@ First matching rule wins.
 
 ```ts
 const rules = [
-  { tool: "purge_tenant", effect: "deny", reason: "Never from an agent" },
-  { tool: "transfer_*", effect: "require_approval" },
+  { tool: "change_compensation", effect: "deny", reason: "Never from an agent" },
+  { tool: "create_ticket", effect: "require_approval" },
   { tool: "*", effect: "force_shadow", roles: ["intern"] },
 ];
 ```
@@ -105,9 +108,9 @@ import { createGovernedMcpServer } from "lattice-mcp";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 const server = createGovernedMcpServer({
-  name: "ledger",
+  name: "workplace",
   gateway,
-  tools: [getBalance, transfer],
+  tools: [searchDirectory, createTicket],
 });
 
 const transport = new StdioServerTransport();
@@ -127,18 +130,9 @@ Write tools automatically receive an `approve: boolean` input. Agents must previ
 - **Reads cannot be high-risk.** `defineTool` rejects that combination.
 - **This is not a model.** Bring your own LLM. Lattice governs *tools*.
 
-## Lattice ecosystem
+## Related
 
-| Repo | Role |
-|---|---|
-| **lattice-mcp** | Policy kernel (this repo) |
-| [forge-agent](https://github.com/popuripk/forge-agent) | Agent runtime with tracing and a mock model for CI |
-| [atlas-orchestrator](https://github.com/popuripk/atlas-orchestrator) | Multi-agent planner + specialists + blackboard |
-| [lattice-eval](https://github.com/popuripk/lattice-eval) | Contract tests and golden traces |
-| [lattice-memory](https://github.com/popuripk/lattice-memory) | Knowledge-graph memory MCP |
-| [ewm-ops-mcp](https://github.com/popuripk/ewm-ops-mcp) | Warehouse-ops MCP (governed domain server) |
-| [self-service-mcp](https://github.com/popuripk/self-service-mcp) | Workplace self-service MCP |
-| [lattice-mcp-py](https://github.com/popuripk/lattice-mcp-py) | Python policy gateway |
+Kernel only in this repo. Domain drills (synthetic backends): [self-service-mcp](https://github.com/popuripk/self-service-mcp) (always-deny compensation), [ewm-ops-mcp](https://github.com/popuripk/ewm-ops-mcp) (always-deny goods issue). Python twin: [lattice-mcp-py](https://github.com/popuripk/lattice-mcp-py). Eval: [lattice-eval](https://github.com/popuripk/lattice-eval).
 
 ## License
 

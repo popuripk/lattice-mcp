@@ -23,7 +23,7 @@
     "tool-calling",
     "human-in-the-loop"
   ],
-  "author": "Prasanna Kumar Popuri",
+  "author": "Prasanna Kumar Popuri <popuripk@gmail.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
